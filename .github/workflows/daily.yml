@@ -1,0 +1,54 @@
+name: daily-board
+
+on:
+  schedule:
+    # GitHubの定期実行は日本時間 4:00 と 5:30 頃(UTC 19:00 / 20:30)。混雑時は数十分遅れることがあります
+    - cron: "0 19 * * *"
+    - cron: "30 20 * * *"
+  workflow_dispatch: # 手動実行ボタン用
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 情報を集めてHTMLを作る(パスコードで暗号化。未設定なら公開せず失敗)
+        env:
+          BOARD_PASSCODE: ${{ secrets.BOARD_PASSCODE }}
+        run: python -m board.main --out site --raw raw --require-passcode
+      - name: 取得した生HTMLを保存(うまく読めないときの調査用)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-html
+          path: raw
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

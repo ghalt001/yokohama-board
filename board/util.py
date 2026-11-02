@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -142,6 +143,46 @@ class Fetcher:
                 rp.parse([])
             self._robots[base] = rp
         return rp.can_fetch(UA, url)
+
+    def get_text(self, url: str, tag: str, ext: str = "txt", robots: bool = True, ok_404: bool = False):
+        """テキスト(JSON/ICSなど)を取得。ok_404=True のとき 404 は None を返す。"""
+        if robots and not self._allowed(url):
+            raise FetchError("robots.txt により取得が許可されていません")
+        wait = self.delay - (time.time() - self._last)
+        if wait > 0:
+            time.sleep(wait)
+        last: Exception | None = None
+        r = None
+        for attempt in range(3):
+            try:
+                r = self.s.get(url, timeout=30)
+                self._last = time.time()
+                if r.status_code == 200:
+                    break
+                if r.status_code == 404 and ok_404:
+                    return None
+                last = FetchError(f"HTTP {r.status_code}")
+            except requests.RequestException as e:
+                last = FetchError(str(e)[:120])
+            r = None
+            time.sleep(2 * (attempt + 1))
+        if r is None:
+            raise last or FetchError("取得失敗")
+        if self.raw_dir:
+            fn = re.sub(r"[^\w.-]", "_", tag) + "." + ext
+            with open(os.path.join(self.raw_dir, fn), "wb") as f:
+                f.write(r.content)
+        r.encoding = "utf-8"
+        return r.text
+
+    def get_json(self, url: str, tag: str, ok_404: bool = False):
+        t = self.get_text(url, tag, ext="json", ok_404=ok_404)
+        if t is None:
+            return None
+        try:
+            return json.loads(t)
+        except ValueError as e:
+            raise FetchError("JSONとして読めません") from e
 
     def get_soup(self, url: str, tag: str) -> BeautifulSoup:
         if not self._allowed(url):

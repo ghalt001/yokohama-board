@@ -4,6 +4,7 @@
 
 実行: python tests/test_sources.py
 """
+import json
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -30,6 +31,22 @@ class FakeFetcher:
             if tag.startswith(k):
                 return BeautifulSoup(v, "lxml")
         raise FetchError("fixture なし: " + tag)
+
+    def get_text(self, url, tag, ext="txt", robots=True, ok_404=False):
+        for k, v in self.pages.items():
+            if tag.startswith(k):
+                if v is None:
+                    if ok_404:
+                        return None
+                    raise FetchError("HTTP 404")
+                return v
+        raise FetchError("fixture なし: " + tag)
+
+    def get_json(self, url, tag, ok_404=False):
+        import json as _j
+
+        t = self.get_text(url, tag, ext="json", ok_404=ok_404)
+        return None if t is None else _j.loads(t)
 
 
 def lines_html(lines):
@@ -287,12 +304,89 @@ def test_akarenga():
     assert "イベント広場" in e.note
 
 
-def test_arena_empty_table_warns():
-    html = "<h2>横浜アリーナで開催されるイベント情報</h2><p>2026.11.01 　コンサート</p><p>U-KNOW PROJECT</p><p>開場：15:00 開演：16:00</p><table><tr><td>日付</td><td>イベント名</td></tr></table>"
+ARENA_JSON = json.dumps([
+    {"date1": "2026-11-03", "date2": "2026-11-03", "category": "1", "title": "i☆Ris 14th Anniversary Live", "artist": "i☆Ris",
+     "ev_open": ["17:00"], "ev_start": ["18:00"], "ev_end": [], "construction": ["2026-11-02"], "path": "/event/detail/iris", "url": False},
+    {"date1": "2026-11-02", "date2": "2026-11-03", "category": "2", "title": "展示会", "artist": False,
+     "ev_open": ["9：30"], "ev_start": [], "ev_end": ["17：00予定"], "path": "/event/detail/x", "url": "https://example.com/"},
+])
+
+
+def test_arena_json():
     res = Result("arena", "横浜アリーナ", "https://www.yokohama-arena.co.jp/event/")
-    S.arena(ctx_for({"arena-202611": html}), res)
-    assert res.warnings, "一覧が空なら警告を出す"
-    assert res.events and res.events[0].start == "16:00"
+    S.arena(ctx_for({"arena-202611": ARENA_JSON}), res)
+    assert not res.warnings and len(res.events) == 2
+    a = [e for e in res.events if "Ris" in e.title][0]
+    assert (a.open, a.start, a.end) == ("17:00", "18:00", None) and a.url.endswith("/event/detail/iris")
+    b = [e for e in res.events if e.title == "展示会"][0]
+    assert (b.open, b.end) == ("09:30", "17:00") and b.span_end == date(2026, 11, 3) and b.url == "https://example.com/"
+
+
+def test_arena_bad_json_is_error():
+    res = Result("arena", "横浜アリーナ", "https://www.yokohama-arena.co.jp/event/")
+    try:
+        S.arena(ctx_for({"arena-202611": "{}"}), res)
+    except Exception:
+        return
+    assert res.warnings, "想定外の形式は警告かエラーにする"
+
+
+HAMASTA = json.dumps([
+    {"title": "保全日", "title_link": "", "date": "2026-10-31", "open_time": "", "start_time": "", "end_time": "", "target": "", "pro_category_1": ""},
+    {"title": "貸切利用", "title_link": "", "date": "2026-10-23", "open_time": "", "start_time": "", "end_time": "", "target": ""},
+    {"title": "SMBC日本シリーズ2026", "title_link": "https://www.baystars.co.jp/game/result/1", "date": "2026-10-25",
+     "open_time": "", "start_time": "18:00", "end_time": "", "target": "福岡ソフトバンクホークス", "pro_category_1": "日本シリーズ"},
+    {"title": "「SMBC日本シリーズ2026」パブリックビューイング", "title_link": "", "date": "2026-10-25",
+     "open_time": "16:30", "start_time": "18:00", "end_time": "", "target": "", "pro_category_1": ""},
+])
+
+
+def test_hamasta_october():
+    today = date(2026, 10, 25)
+    ctx = Ctx(today=today, targets=[today, today + timedelta(days=1)], fetch=FakeFetcher({"hamasta-202610": HAMASTA}))
+    res = Result("hamasta", "横浜スタジアム", "https://www.yokohama-stadium.co.jp/events/")
+    S.hamasta(ctx, res)
+    assert [e.title for e in res.events if e.day == today] == [
+        "SMBC日本シリーズ2026 vs 福岡ソフトバンクホークス", "「SMBC日本シリーズ2026」パブリックビューイング"], res.events
+    assert not any("保全日" in e.title or "貸切" in e.title for e in res.events)
+    assert res.events[0].start == "18:00" and res.events[0].url
+
+
+def test_hamasta_unpublished_month_is_note_not_error():
+    ctx = ctx_for({"hamasta-202611": None})
+    res = Result("hamasta", "横浜スタジアム", "https://www.yokohama-stadium.co.jp/events/")
+    S.hamasta(ctx, res)
+    assert not res.events and not res.warnings and any("公開されていません" in n for n in res.notes)
+
+
+ICS = (
+    "BEGIN:VCALENDAR\r\nX-WR-CALNAME:国際会議\r\n"
+    "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261102\r\nDTEND;VALUE=DATE:20261105\r\n"
+    "SUMMARY:全国\\, 学会大会\r\nDESCRIPTION:<a href=\"https://example.com/ev1\">詳細</a>\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\nSUMMARY:別の日\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261103\r\nSUMMARY:折り返し\r\n テストのタイトル\r\nEND:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
+
+
+def test_pacifico_ics():
+    pages = {"pacifico-": ICS}
+    res = Result("pacifico", "パシフィコ横浜", "https://www.pacifico.co.jp/eventInfo")
+    S.pacifico(ctx_for(pages), res)
+    titles = sorted({e.title for e in res.events})
+    assert titles == ["全国, 学会大会", "折り返しテストのタイトル"], titles
+    e = [x for x in res.events if x.title.startswith("全国")][0]
+    assert e.day == date(2026, 11, 2) and e.span_end == date(2026, 11, 4) and e.url == "https://example.com/ev1"
+    assert "国際会議" in e.note and not res.warnings
+
+
+def test_pacifico_all_fail_is_error():
+    res = Result("pacifico", "パシフィコ横浜", "https://www.pacifico.co.jp/eventInfo")
+    try:
+        S.pacifico(ctx_for({}), res)
+    except FetchError:
+        return
+    raise AssertionError("全カレンダー失敗はエラーにする")
 
 
 def test_dedupe():
@@ -307,7 +401,6 @@ def test_full_run_with_failures(tmp_path_str="/tmp/board_test_out"):
     html = open(os.path.join(tmp_path_str, "index.html"), encoding="utf-8").read()
     assert "三井オーシャンサクラ" in html and "18:15" in html
     assert "⚠取得失敗" in html, "失敗した施設は「なし」ではなく失敗と表示"
-    assert "自動取得未対応" in html
     assert "終演目安" in html
     assert sum(1 for r in results if r.error) >= 6
 
@@ -318,7 +411,7 @@ def test_full_run_all_sources_with_real_shapes(tmp_path_str="/tmp/board_test_out
         "budokan-202611": BUDOKAN, "buntai": lines_html(BUNTAI),
         "nissan-base": NISSAN, "nissan-detail": NISSAN_DETAIL,
         "pia-202611": PIA, "pia-detail": PIA_DETAIL, "akarenga": AKARENGA,
-        "arena-202611": "<p>2026.11.02 コンサート</p><p>デモ公演</p><p>開場：17:00 開演：18:00</p>",
+        "arena-202611": ARENA_JSON, "hamasta-202611": None, "pacifico-": ICS,
     }
     now = datetime(2026, 11, 2, 4, 0, tzinfo=JST)
     results = run(tmp_path_str, None, fetcher=FakeFetcher(pages), now=now)

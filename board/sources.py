@@ -367,55 +367,197 @@ def pia(ctx, res: Result):
 
 
 # ---------------------------------------------------------------- 横浜アリーナ
+def _first_time(v):
+    """['20:00予定'] や ['17：00'] の先頭を HH:MM に。空なら None。"""
+    return norm_time(v[0]) if isinstance(v, list) and v else None
+
+
+def parse_arena_json(data, base_url: str) -> list[Event]:
+    out = []
+    for it in data:
+        try:
+            d1 = date.fromisoformat(it["date1"])
+            d2 = date.fromisoformat(it.get("date2") or it["date1"])
+        except (KeyError, ValueError):
+            continue
+        title = clean(it.get("title") or "")
+        artist = clean(it.get("artist") or "")
+        if artist and artist not in title:
+            title = f"{title}({artist})" if title else artist
+        if not title:
+            continue
+        link = it.get("url") or ""
+        if not link and it.get("path"):
+            link = urljoin(base_url, it["path"])
+        out.append(
+            Event(
+                "横浜アリーナ", title, d1,
+                _first_time(it.get("ev_open")), _first_time(it.get("ev_start")), _first_time(it.get("ev_end")),
+                url=link, span_end=d2 if d2 > d1 else None,
+            )
+        )
+    return out
+
+
 def arena(ctx, res: Result):
     for y, m in ctx.months:
-        soup = ctx.fetch.get_soup(f"https://www.yokohama-arena.co.jp/event/{y}-{m:02d}", f"arena-{y}{m:02d}")
-        before = len(res.events)
-        # (a) 月間一覧の表(JavaScript描画の場合は空)
-        for tr in soup.find_all("tr"):
-            tds = [clean(td.get_text(" ")) for td in tr.find_all(["td", "th"])]
-            if len(tds) < 4:
-                continue
-            dm = re.search(r"(\d{1,2})\s*[/.月]\s*(\d{1,2})", tds[0]) or re.search(r"()(\d{1,2})", tds[0])
-            if not dm or tds[0].startswith("日付"):
-                continue
+        data = ctx.fetch.get_json(f"https://www.yokohama-arena.co.jp/event/{y}{m:02d}?_format=json", f"arena-{y}{m:02d}")
+        if not isinstance(data, list):
+            res.warnings.append(f"{y}年{m}月: 予想外の形式のデータでした。「なし」とは限りません")
+            continue
+        res.events.extend(parse_arena_json(data, "https://www.yokohama-arena.co.jp/"))
+
+
+# ---------------------------------------------------------------- 横浜スタジアム
+_HAMASTA_SKIP = ("保全日", "貸切利用", "予備日")
+
+
+def parse_hamasta(data) -> list[Event]:
+    out = []
+    for it in data:
+        title = clean(it.get("title") or "")
+        if not title or any(k in title for k in _HAMASTA_SKIP):
+            continue
+        try:
+            day = date.fromisoformat(it["date"])
+        except (KeyError, ValueError):
+            continue
+        tg = clean(it.get("target") or "")
+        if tg and tg not in title:
+            title = f"{title} vs {tg}"
+        out.append(
+            Event(
+                "横浜スタジアム", title, day,
+                norm_time(it.get("open_time")), norm_time(it.get("start_time")), norm_time(it.get("end_time")),
+                note=clean(it.get("pro_category_1") or ""), url=it.get("title_link") or "",
+            )
+        )
+    return out
+
+
+def hamasta(ctx, res: Result):
+    for y, m in ctx.months:
+        data = ctx.fetch.get_json(
+            f"https://www.yokohama-stadium.co.jp/_nuxt/_db/event-chunks__{y}-{m:02d}.json", f"hamasta-{y}{m:02d}", ok_404=True
+        )
+        if data is None:
+            res.notes.append(f"{y}年{m}月の日程は公式サイトでまだ公開されていません")
+            continue
+        if not isinstance(data, list):
+            res.warnings.append(f"{y}年{m}月: 予想外の形式のデータでした。「なし」とは限りません")
+            continue
+        res.events.extend(parse_hamasta(data))
+
+
+# ---------------------------------------------------------------- パシフィコ横浜
+PACIFICO_CALENDARS = [
+    "78a66c66587ef8c39d987a3eb014082df0eff54f2445e9f837f94404fa0304e6",
+    "n1d7858363ffb40c9c82e272fc18b92528e0db30df3d6e159dfc503eeee6464a5",
+    "n9e043fe7408716fce55f5f54f484074002eb939a192acdb50237cfb3ffac54fb",
+    "n230f1639b8d54499f15caa874711a36b626933721072c1f9182d1282e4ddc586",
+    "n6804e72a022c5b213349f94093988a11b91248a693afc0a30328b839ea2ed120",
+    "n737b19946fd8b839a17aaaa8ddc15f64af59045e36622b78fb50dcc31959992e",
+]
+
+
+def _ics_unescape(s: str) -> str:
+    return s.replace("\\n", " ").replace("\\N", " ").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
+
+
+def parse_ics(text: str):
+    """(カレンダー名, [{start,end,summary,desc}]) 。終日予定は date、時刻付きは datetime(時刻は文字列)。"""
+    lines = []
+    for ln in text.replace("\r\n", "\n").split("\n"):
+        if ln[:1] in (" ", "\t") and lines:
+            lines[-1] += ln[1:]
+        else:
+            lines.append(ln)
+    name, evs, cur = "", [], None
+    for ln in lines:
+        if ln == "BEGIN:VEVENT":
+            cur = {}
+        elif ln == "END:VEVENT":
+            if cur is not None:
+                evs.append(cur)
+            cur = None
+        elif ":" in ln:
+            k, v = ln.split(":", 1)
+            base = k.split(";")[0]
+            if cur is None:
+                if base == "X-WR-CALNAME":
+                    name = _ics_unescape(v)
+            elif base in ("DTSTART", "DTEND"):
+                cur[base] = (v.strip(), "VALUE=DATE" in k.upper())
+            elif base == "SUMMARY":
+                cur["summary"] = _ics_unescape(v)
+            elif base == "DESCRIPTION":
+                cur["desc"] = _ics_unescape(v)
+            elif base == "RRULE":
+                cur["rrule"] = v
+    return name, evs
+
+
+def parse_pacifico(text: str) -> tuple[list[Event], int]:
+    from datetime import timedelta
+
+    name, raw = parse_ics(text)
+    out, skipped = [], 0
+    for e in raw:
+        if "DTSTART" not in e:
+            continue
+        sv, allday = e["DTSTART"]
+        try:
+            d1 = date(int(sv[0:4]), int(sv[4:6]), int(sv[6:8]))
+        except ValueError:
+            continue
+        start = None
+        if not allday and len(sv) >= 13:
+            start = f"{sv[9:11]}:{sv[11:13]}"
+        d2 = None
+        if "DTEND" in e:
+            ev, _ = e["DTEND"]
             try:
-                day = date(y, int(dm.group(1) or m), int(dm.group(2)))
+                d2 = date(int(ev[0:4]), int(ev[4:6]), int(ev[6:8]))
             except ValueError:
-                continue
-            a = tr.find("a")
-            res.events.append(
-                Event(
-                    "横浜アリーナ",
-                    tds[1],
-                    day,
-                    norm_time(tds[2]),
-                    norm_time(tds[3]),
-                    norm_time(tds[4]) if len(tds) > 4 else None,
-                    url=urljoin(res.url, a["href"]) if a and a.get("href") else "",
-                )
+                d2 = None
+            if d2 and allday:
+                d2 -= timedelta(days=1)  # 終日予定の DTEND は翌日(排他的)
+        if d2 and d2 <= d1:
+            d2 = None
+        if e.get("rrule"):
+            skipped += 1  # 繰り返し予定は未展開(過去の調査では存在せず)
+        m = re.search(r'href="([^"]+)"', e.get("desc", "")) or re.search(r"(https?://\S+)", e.get("desc", ""))
+        out.append(
+            Event(
+                "パシフィコ横浜", clean(e.get("summary", "")), d1, start=start,
+                note=(name + " / " if name else "") + ("" if start else "時刻は公式で確認"),
+                url=m.group(1) if m else "", span_end=d2,
             )
-        table_found = len(res.events) - before
-        # (b) ページ上部のイベントカード
-        lines = lines_of(soup)
-        for i, ln in enumerate(lines):
-            dm = re.match(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})\b", ln)
-            if not dm:
-                continue
-            chunk = " ".join(lines[i + 1 : i + 8])
-            om = re.search(r"開場[：:]\s*" + TIME_PAT, chunk)
-            sm = re.search(r"開演[：:]\s*" + TIME_PAT, chunk)
-            title = lines[i + 1] if i + 1 < len(lines) else ""
-            if title in ("コンサート", "スポーツ", "イベント") and i + 2 < len(lines):
-                title = lines[i + 2]
-            day = date(int(dm.group(1)), int(dm.group(2)), int(dm.group(3)))
-            if any(e.day == day and e.title == title for e in res.events):
-                continue
-            res.events.append(
-                Event("横浜アリーナ", title, day, norm_time(om.group(1)) if om else None, norm_time(sm.group(1)) if sm else None)
-            )
-        if table_found == 0:
-            res.warnings.append(f"{y}年{m}月: 月間一覧が空でした(JavaScript描画の可能性)。「なし」とは限りません")
+        )
+    return out, skipped
+
+
+def pacifico(ctx, res: Result):
+    ok = 0
+    for cid in PACIFICO_CALENDARS:
+        url = f"https://calendar.google.com/calendar/ical/{cid}%40group.calendar.google.com/public/basic.ics"
+        try:
+            # 公式サイトが公開しているカレンダー購読用の公開フィード(robots.txt は Google のもの。個人利用の範囲で取得)
+            text = ctx.fetch.get_text(url, f"pacifico-{cid[:6]}", ext="ics", robots=False)
+        except FetchError as e:
+            res.warnings.append(f"カレンダー{cid[:6]}の取得に失敗: {e}")
+            continue
+        if "BEGIN:VCALENDAR" not in (text or ""):
+            res.warnings.append(f"カレンダー{cid[:6]}が予想外の形式でした")
+            continue
+        ok += 1
+        evs, skipped = parse_pacifico(text)
+        if skipped:
+            res.warnings.append(f"カレンダー{cid[:6]}に繰り返し予定が{skipped}件あり、未展開です")
+        res.events.extend(e for e in evs if _in_targets(ctx, e))
+    if not ok:
+        raise FetchError("カレンダーを1つも取得できませんでした")
+    res.notes.append("パシフィコ横浜は公式カレンダーの日付のみ(開場・開演時刻は未掲載)。時刻は公式サイトで確認してください")
 
 
 # ---------------------------------------------------------------- 横浜赤レンガ倉庫

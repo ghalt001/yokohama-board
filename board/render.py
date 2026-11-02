@@ -182,6 +182,11 @@ footer{margin-top:2em;color:var(--mut);font-size:.8rem}footer li{margin:2px 0}
 """
 
 
+# 表示の切り替え(必要になったら True にする)
+SHOW_CHIPS = False      # 施設ごとの件数・公式リンクの一覧(下部のリンク集と重複するため非表示)
+SHOW_TOMORROW = False   # 「明日」の折りたたみ表示
+
+
 def render(results, now: datetime, targets: list[date]) -> str:
     today = targets[0]
     problems = []
@@ -206,13 +211,15 @@ def render(results, now: datetime, targets: list[date]) -> str:
         parts.append("</ul></div>")
 
     parts.append(f"<h2>今日 {fmt_day(today)}</h2>")
-    parts.append(status_chips(results, today))
+    if SHOW_CHIPS:
+        parts.append(status_chips(results, today))
     parts.append(day_section(results, today))
 
-    if len(targets) > 1:
+    if SHOW_TOMORROW and len(targets) > 1:
         t = targets[1]
         parts.append(f"<details><summary>明日 {fmt_day(t)}</summary>")
-        parts.append(status_chips(results, t))
+        if SHOW_CHIPS:
+            parts.append(status_chips(results, t))
         parts.append(day_section(results, t))
         parts.append("</details>")
 

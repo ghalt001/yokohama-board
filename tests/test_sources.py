@@ -400,7 +400,7 @@ def test_full_run_with_failures(tmp_path_str="/tmp/board_test_out"):
     results = run(tmp_path_str, None, fetcher=FakeFetcher(pages), now=now)
     html = open(os.path.join(tmp_path_str, "index.html"), encoding="utf-8").read()
     assert "三井オーシャンサクラ" in html and "18:15" in html
-    assert "⚠取得失敗" in html, "失敗した施設は「なし」ではなく失敗と表示"
+    assert "取得に失敗しました" in html, "失敗した施設は「なし」ではなく失敗と表示"
     assert "終演目安" in html
     assert sum(1 for r in results if r.error) >= 6
 

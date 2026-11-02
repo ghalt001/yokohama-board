@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 
 from .models import Event, Result, Ship
 from .util import (
+    FetchError,
     TIME_PAT,
     clean,
     dedupe_repeat,
@@ -117,12 +118,24 @@ def karena(ctx, res: Result):
     for a in soup.find_all("a", href=re.compile(r"/schedule/\d{8}-\d+")):
         dm = re.search(r"/schedule/(\d{4})(\d{2})(\d{2})-\d+", a["href"])
         day = date(int(dm.group(1)), int(dm.group(2)), int(dm.group(3)))
-        txt = clean(a.get_text(" "))
-        title = re.sub(r"^取扱公演\s*", "", txt.split(" - background ")[0])
-        om = re.search(r"OPEN\s*" + TIME_PAT + r"\s*/\s*START\s*" + TIME_PAT, txt)
-        o, s = (norm_time(om.group(1)), norm_time(om.group(2))) if om else (None, None)
-        note = "" if s else "時刻は公式サイトで確認"
-        res.events.append(Event("Kアリーナ横浜", title, day, o, s, note=note, url=urljoin(res.url, a["href"])))
+        t = a.select_one(".schedule-list-item__title")
+        ot = a.select_one(".schedule-list-item__open-start")
+        artist = a.select_one(".schedule-list-item__artist")
+        if t:
+            title = clean(t.get_text(" "))
+            timetxt = clean(ot.get_text(" ")) if ot else ""
+        else:  # 構造が変わった場合の保険(題名に時刻が混ざるのを防ぐ)
+            txt = clean(a.get_text(" "))
+            timetxt = txt
+            title = re.sub(r"\s*OPEN\s*\d.*$", "", txt.split(" - background ")[0])
+        om = re.search(r"OPEN\s*" + TIME_PAT + r"\s*/\s*START\s*" + TIME_PAT, timetxt)
+        o, s_ = (norm_time(om.group(1)), norm_time(om.group(2))) if om else (None, None)
+        note = clean(artist.get_text(" ")) if artist else ""
+        if len(note) > 50:
+            note = note[:50] + "…"
+        if not s_:
+            note = (note + " " if note else "") + "時刻は公式サイトで確認"
+        res.events.append(Event("Kアリーナ横浜", title, day, o, s_, note=note, url=urljoin(res.url, a["href"])))
         found += 1
     if not found:
         res.warnings.append("公演が1件も取得できませんでした")
@@ -130,79 +143,69 @@ def karena(ctx, res: Result):
 
 # ---------------------------------------------------------------- 横浜武道館
 _SKIP_TITLES = {"非公開", "設営", "撤去", "休館日"}
+_TOKEN = re.compile(r"^(?:(\d{1,2})日\s*)?(\d{1,2}:\d{2})$")
 
 
-def parse_budokan_lines(lines: list[str], y: int, m: int) -> list[Event]:
-    events: list[Event] = []
-    section = None
-    block: list[str] = []
-    block_day = None
-
-    def flush():
-        nonlocal block, block_day
-        if section and block_day and block:
-            events.extend(_budokan_block(block, block_day, y, m, section))
-        block, block_day = [], None
-
-    for ln in lines:
-        if ln in ("アリーナ", "武道場"):
-            flush()
-            section = ln
-            continue
-        if ln.startswith("※駐車場営業予定"):
-            flush()
-            section = None
-            continue
-        if section:
-            dm = re.fullmatch(r"(\d{1,2})([月火水木金土日])", ln)
-            if dm:
-                try:
-                    ok = WD[date(y, m, int(dm.group(1))).weekday()] == dm.group(2)
-                except ValueError:
-                    ok = False
-                if ok:
-                    flush()
-                    block_day = int(dm.group(1))
-                    continue
-            block.append(ln)
-    flush()
-    return events
+def _cell_lines(td) -> list[str]:
+    return [clean(x) for x in td.get_text("\n").split("\n") if clean(x)]
 
 
-def _budokan_block(block, day, y, m, section):
-    title = block[0]
-    if title in _SKIP_TITLES or "休館" in title or title.startswith("横浜武道館 教室"):
-        return []
-    text = " ".join(block[1:])
-    venue = "横浜武道館" if section == "アリーナ" else "横浜武道館(武道場)"
-    cm = re.search(r"(有料|無料|関係者のみ|教室)\s*(\d+)?", text)
-    note = ""
-    if cm:
-        note = cm.group(1) + (f" 来場{cm.group(2)}人" if cm.group(2) else "")
-    toks = re.findall(r"(?:(\d{1,2})日\s*)?(\d{1,2}:\d{2})", text)
+def _tokens(td) -> list[tuple[int | None, str]]:
     out = []
-    if toks and all(t[0] for t in toks):
-        half = len(toks) // 2
-        starts, ends = toks[:half], toks[half:]
-        for i, (dd, t) in enumerate(starts):
-            end = ends[i][1] if i < len(ends) else None
-            out.append(Event(venue, title, date(y, m, int(dd)), start=t, end=end, note=note))
-    elif toks:
-        out.append(Event(venue, title, date(y, m, day), start=toks[0][1], end=toks[1][1] if len(toks) > 1 else None, note=note))
-    else:
-        out.append(Event(venue, title, date(y, m, day), note=note))
+    for ln in _cell_lines(td):
+        m = _TOKEN.match(ln)
+        if m:
+            out.append((int(m.group(1)) if m.group(1) else None, norm_time(m.group(2))))
     return out
+
+
+def parse_budokan(soup, y: int, m: int):
+    """戻り値: (イベント一覧, 日付の行数)。日付の行が0なら表を読めていない。"""
+    events: list[Event] = []
+    nrows = 0
+    for ti, table in enumerate(soup.select("table.event__main__item__table")):
+        label = table.get("aria-labelledby")
+        head = soup.find(id=label) if label else None
+        section = clean(head.get_text()) if head else ""
+        is_dojo = "武道" in section or (not section and ti == 1)
+        venue = "横浜武道館(武道場)" if is_dojo else "横浜武道館"
+        for tr in table.find_all("tr"):
+            d = tr.find("span", class_="_date")
+            if not d or not clean(d.get_text()).isdigit():
+                continue
+            nrows += 1
+            tds = tr.find_all("td", recursive=False)
+            if not tds or "_close" in (tr.get("class") or []):
+                continue
+            u = tds[0].select_one("._user")
+            title = clean(u.get_text(" ")) if u else clean(tds[0].get_text(" "))
+            if not title or title in _SKIP_TITLES or "休館" in title or title.startswith("横浜武道館 教室"):
+                continue
+            row_day = int(clean(d.get_text()))
+            kubun = clean(tds[1].get_text()) if len(tds) > 1 else ""
+            count = clean(tds[2].get_text()) if len(tds) > 2 else ""
+            note = (kubun + (f" 来場{count}人" if count.isdigit() else "")).strip()
+            starts = _tokens(tds[3]) if len(tds) > 3 else []
+            ends = _tokens(tds[4]) if len(tds) > 4 else []
+            if not starts:
+                events.append(Event(venue, title, date(y, m, row_day), note=note))
+                continue
+            for i, (dd, t) in enumerate(starts):
+                end = ends[i][1] if i < len(ends) else None
+                events.append(Event(venue, title, date(y, m, dd or row_day), start=t, end=end, note=note))
+    return events, nrows
 
 
 def budokan(ctx, res: Result):
     for y, m in ctx.months:
-        soup = ctx.fetch.get_soup(f"{res.url}?year={y}&month={m}", f"budokan-{y}{m:02d}")
-        evs = parse_budokan_lines(lines_of(soup), y, m)
+        page = f"{res.url}?year={y}&month={m}"
+        soup = ctx.fetch.get_soup(page, f"budokan-{y}{m:02d}")
+        evs, nrows = parse_budokan(soup, y, m)
         for e in evs:
-            e.url = f"{res.url}?year={y}&month={m}"
+            e.url = page
         res.events.extend(evs)
-        if "アリーナ" not in " ".join(lines_of(soup)[:400]) and not evs:
-            res.warnings.append(f"{y}年{m}月: 表を読み取れませんでした")
+        if nrows == 0:
+            res.warnings.append(f"{y}年{m}月: 表を読み取れませんでした(ページの作りが変わった可能性)")
 
 
 # ---------------------------------------------------------------- 横浜BUNTAI
@@ -313,28 +316,49 @@ def nissan(ctx, res: Result):
             res.warnings.append(f"{y}年{m}月: カレンダーが読み取れませんでした")
     for e in res.events:
         if _in_targets(ctx, e):
-            enrich(ctx, e, f"nissan-detail-{e.day:%m%d}")
+            _nissan_detail(ctx, e)
+
+
+def _nissan_detail(ctx, e: Event) -> None:
+    """詳細ページの表(行事名/期日/開場/開始/終了/…)から時刻を補う。"""
+    if not e.url or ctx.detail_budget <= 0:
+        return
+    ctx.detail_budget -= 1
+    try:
+        soup = ctx.fetch.get_soup(e.url, f"nissan-detail-{e.day:%m%d}-{e.url[-6:]}")
+    except FetchError:
+        return
+    vals = {}
+    for tr in soup.select("table.cal_table tr"):
+        th, td = tr.find("th"), tr.find("td")
+        if th and td:
+            vals[clean(th.get_text())] = clean(td.get_text(" "))
+    e.open = e.open or norm_time(vals.get("開場"))
+    e.start = e.start or norm_time(vals.get("開始"))
+    e.end = e.end or norm_time(vals.get("終了"))
 
 
 # ---------------------------------------------------------------- ぴあアリーナMM
 def pia(ctx, res: Result):
     for y, m in ctx.months:
-        soup = ctx.fetch.get_soup(f"https://pia-arena-mm.jp/event@p1={y}&p2={m:02d}.html", f"pia-{y}{m:02d}")
+        page = f"https://pia-arena-mm.jp/event@p1={y}&p2={m:02d}.html"
+        soup = ctx.fetch.get_soup(page, f"pia-{y}{m:02d}")
         found = 0
-        for a in soup.find_all("a", href=re.compile(r"/event/\d+\.html")):
-            txt = clean(a.get_text(" "))
-            dm = re.match(r"^(\d{1,2})\.(\d{1,2})\s+[A-Z]{3}\s+(.+)$", txt)
-            if not dm:
+        for a in soup.select("a.event-list"):
+            dt = a.select_one(".event-list__date p")
+            h = a.select_one(".event-list__detail h3") or a.select_one("h3")
+            dm = re.match(r"\s*(\d{1,2})\.(\d{1,2})", dt.get_text()) if dt else None
+            if not dm or not h:
                 continue
             found += 1
-            title = dm.group(3)
+            title = clean(h.get_text(" "))
             if title.upper() == "PRIVATE":
                 continue
             try:
                 day = date(y, int(dm.group(1)), int(dm.group(2)))
             except ValueError:
                 continue
-            res.events.append(Event("ぴあアリーナMM", title, day, url=urljoin("https://pia-arena-mm.jp/", a["href"])))
+            res.events.append(Event("ぴあアリーナMM", title, day, url=urljoin(page, a.get("href", ""))))
         if not found:
             res.warnings.append(f"{y}年{m}月: 公演が1件も取得できませんでした")
     for e in res.events:

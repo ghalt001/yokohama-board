@@ -1,4 +1,6 @@
-"""解析処理の動作確認(実サイトには接続せず、想定したHTMLの断片で検証する)。
+"""解析処理の動作確認(実サイトには接続せず、実際のHTMLを写した断片で検証する)。
+
+武道館・ぴあアリーナMM・Kアリーナ・日産スタジアム(詳細)・客船入港は、実ページのHTMLの構造をそのまま写した断片を使っている。
 
 実行: python tests/test_sources.py
 """
@@ -13,7 +15,7 @@ from bs4 import BeautifulSoup  # noqa: E402
 from board import sources as S  # noqa: E402
 from board.main import SOURCES, run  # noqa: E402
 from board.models import Result  # noqa: E402
-from board.util import Ctx, FetchError, dedupe_repeat  # noqa: E402
+from board.util import Ctx, FetchError, dedupe_repeat, norm_time, times_from_text  # noqa: E402
 
 TODAY = date(2026, 11, 2)
 JST = timezone(timedelta(hours=9))
@@ -38,9 +40,22 @@ def ctx_for(pages):
     return Ctx(today=TODAY, targets=[TODAY, TODAY + timedelta(days=1)], fetch=FakeFetcher(pages))
 
 
-SHIPS = """<h2>11月</h2><table>
-<tr><th>月</th><th>入港</th><th>出港</th><th>着岸場所</th><th>船名</th><th>前港</th><th>次港</th></tr>
-<tr><td>11</td><td>2日(月)<br>9:00</td><td>2日（月）<br>17：00</td><td>新港</td><td>三井オーシャンサクラ</td><td>八丈島</td><td>串本</td></tr>
+# ---------------------------------------------------------------- 共通
+def test_norm_time():
+    assert norm_time("17:00") == "17:00"
+    assert norm_time("9:30") == "09:30"
+    assert norm_time("13時") == "13:00"
+    assert norm_time("10時30分") == "10:30"
+    assert norm_time("16時00分") == "16:00"
+    assert norm_time("未定") is None and norm_time("") is None and norm_time(None) is None
+    o, s, e = times_from_text("公演時間 開場/17:00 開演/18:00 料金 受付開始 08:00")
+    assert (o, s, e) == ("17:00", "18:00", None), (o, s, e)
+
+
+# ---------------------------------------------------------------- 客船入港(実HTMLと同じ構造)
+SHIPS = """<h2>11月</h2><table><caption>11月</caption>
+<tr><th scope="col" class="center">月</th><th scope="col" class="center">入港（着岸）</th><th scope="col" class="center">出港（離岸）</th><th scope="col" class="center">着岸場所</th><th scope="col" class="center">船名</th><th scope="col" class="center">前港</th><th scope="col" class="center">次港</th></tr>
+<tr><td class="center">11</td><td class="left">2日(月)<br>9:00</td><td class="left">2日(月)<br>17:00</td><td class="center">新港</td><td class="center">三井オーシャンサクラ</td><td class="center">八丈島</td><td class="center">串本</td></tr>
 <tr><td>11</td><td>3日(火)<br>非公開</td><td>3日(火)<br>17:00</td><td>大黒</td><td>テスト号【初入港】</td><td>a</td><td>b</td></tr>
 <tr><td>11</td><td>1日(日)<br>9:00</td><td>4日(水)<br>17:00</td><td>大さん橋</td><td>長期停泊船</td><td>a</td><td>b</td></tr>
 <tr><td>11</td><td>2日(月)<br>9:00</td><td>2日(月)<br>17:00</td><td>新港</td><td>※荒天により、寄港中止<br>キャンセル船</td><td>a</td><td>b</td></tr>
@@ -78,8 +93,11 @@ def test_zepp():
     assert by_day[3][0].title == "来栖りん ワンマンライブ", by_day[3][0].title
 
 
-KARENA = """<a href="https://k-arena.com/schedule/20261103-1/">Shout Out to Jesus -ENCORE- in K-Arena - background Shout Out to Jesus -ENCORE- in K-Arena KviBaba OPEN 15:30 / START 17:00</a>
-<a href="/schedule/20261111-1/">米津玄師 2026 TOUR / GHOST - background 米津玄師 米津玄師</a>"""
+# ---------------------------------------------------------------- Kアリーナ(実HTMLと同じ構造)
+KARENA = """<a href="https://k-arena.com/schedule/20261103-1/"><div class="schedule-list-item__container"><div class="schedule-list-item__image"><div class="schedule-list-item__image--blur"><img src="x.jpeg" alt="Shout Out to Jesus -ENCORE- in K-Arena - background"></div><img class="schedule-list-item__image--main" src="x.jpeg" alt="Shout Out to Jesus -ENCORE- in K-Arena"></div><div class="schedule-list-item__content"><h2 class="schedule-list-item__title">Shout Out to Jesus -ENCORE- in K-Arena</h2><p class="schedule-list-item__artist">KviBaba</p><div class="schedule-list-item__open-start"><p>OPEN 15:30 / START 17:00</p></div></div></div></a>
+<a href="https://k-arena.com/schedule/20261111-1/"><div class="schedule-list-item__container"><div class="schedule-list-item__content"><h2 class="schedule-list-item__title">米津玄師 2026 TOUR / GHOST</h2><p class="schedule-list-item__artist">米津玄師</p><div class="schedule-list-item__open-start"><!-- <p>開演時間は調整中につき今後お知らせいたします。</p> --></div></div></div></a>"""
+
+KARENA_OLD_LAYOUT = """<a href="/schedule/20261103-1/">Shout Out to Jesus -ENCORE- in K-Arena KviBaba OPEN 15:30 / START 17:00</a>"""
 
 
 def test_karena():
@@ -87,34 +105,91 @@ def test_karena():
     S.karena(ctx_for({"karena": KARENA}), res)
     e = res.events[0]
     assert (e.day, e.open, e.start) == (date(2026, 11, 3), "15:30", "17:00")
-    assert e.title == "Shout Out to Jesus -ENCORE- in K-Arena"
+    assert e.title == "Shout Out to Jesus -ENCORE- in K-Arena", e.title
+    assert e.note == "KviBaba", e.note
     assert res.events[1].start is None and "公式" in res.events[1].note
+    assert res.events[1].title == "米津玄師 2026 TOUR / GHOST"
+    # 構造が変わっても、題名に時刻が混ざらない
+    res2 = Result("karena", "Kアリーナ横浜", "https://k-arena.com/schedule/")
+    S.karena(ctx_for({"karena": KARENA_OLD_LAYOUT}), res2)
+    assert "OPEN" not in res2.events[0].title and res2.events[0].start == "17:00", res2.events[0]
 
 
-BUDOKAN = [
-    "2026年11月のイベント", "アリーナ", "日程 行事名 区分 来場者数 開始 終了 駐車場※ 営業予定",
-    "1日", "B.LEAGUE ONE 2026-27 SEASON 横浜エクセレンス vs 新潟", "横浜エクセレンス", "有料 2500", "15:05", "17:05", "×",
-    "2月", "非公開", "関係者のみ", "〇",
-    "3火", "Super Big Bang 2026", "スーパースターエンターテインメント", "有料 3000", "13:00", "19:00", "×",
-    "4水", "K2リーグ", "関係者のみ 450", "未定", "未定", "〇",
-    "26木", "第24回支部交流・研修会", "関係者のみ 300", "未定", "未定", "〇",
-    "27金", "B.LEAGUE ONE 横浜エクセレンス vs 岐阜", "有料 2500", "27日19:05", "28日15:05", "27日 21:05", "28日 17:05", "×",
-    "28土", "29日", "日本整形外科学会100周年記念イベントin横浜", "無料 700", "13:00", "16:00", "〇",
-    "※駐車場営業予定〇：通常営業", "武道場", "1日", "第48回関東・東北空手道選手権大会", "関係者のみ 300 未定", "未定", "×",
-    "※駐車場営業予定〇：通常営業",
-]
+# ---------------------------------------------------------------- 横浜武道館(実HTMLと同じ構造)
+def bd_row(day, wd, title=None, host="", kubun="", count="", start=None, end=None, rowspan=1):
+    th = f'<th class=" js-holiday" scope="row"><span class="_date">{day}</span><span class="_day">{wd}</span></th>'
+    if title is None:
+        return f"<tr>{th}</tr>"  # 複数日イベントの2日目以降(セルなし)
+
+    def times(v):
+        v = v or []
+        return "".join(f"<div>{x}</div>" for x in (v + ["", "", ""])[:3])
+
+    rs = f' rowspan="{rowspan}"'
+    host_html = f'<a href="https://example.com/" target="_blank" rel="noopener"> {host} </a>' if host else ""
+    return (
+        f'<tr>{th}<td{rs}><div class="_user"><a href="detail.html?1">{title}</a></div><div class="_host">{host_html}</div></td>'
+        f"<td{rs}>{kubun}</td><td{rs}>{count}</td><td{rs}>{times(start)}</td><td{rs}>{times(end)}</td><td{rs}>〇</td></tr>"
+    )
+
+
+def table(label_id, rows):
+    return (
+        f'<div class="event__main__item__table-wrapper"><table class="event__main__item__table" aria-labelledby="{label_id}">'
+        '<thead><tr><th scope="col">日程</th><th class="_title" scope="col">行事名</th><th scope="col">区分</th>'
+        '<th scope="col">来場者数</th><th scope="col">開始</th><th scope="col">終了</th><th scope="col">駐車場<sup>※</sup><br>営業予定</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
+    )
+
+
+CLOSED = (
+    '<tr class="_close"><th class=" js-holiday" scope="row"><span class="_date">19</span><span class="_day">木</span></th>'
+    '<td rowspan="1"><div class="_user"><span>休館日</span></div><div class="_host"></div></td><td rowspan="1"></td><td rowspan="1"></td>'
+    '<td rowspan="1"><div></div><div></div><div></div></td><td rowspan="1"><div></div><div></div><div></div></td><td rowspan="1"></td></tr>'
+)
+
+BUDOKAN_ARENA = "".join(
+    [
+        bd_row(1, "日", "B.LEAGUE ONE 2026-27 SEASON 横浜エクセレンス vs 新潟", "横浜エクセレンス", "有料", "2500", ["15:05"], ["17:05"]),
+        bd_row(2, "月", "非公開", kubun="関係者のみ"),
+        bd_row(3, "火", "Super Big Bang 2026", "スーパースターエンターテインメント", "有料", "3000", ["13:00"], ["19:00"]),
+        bd_row(4, "水", "第34回FOLTリーグ団体戦", "(一社)新日本ｽﾎﾟｰﾂ連盟", "関係者のみ", "450", ["9:30"], ["18:00"]),
+        bd_row(6, "金", "設営"),
+        CLOSED,
+        bd_row(27, "金", "B.LEAGUE ONE 2026-27 SEASON 横浜エクセレンス vs 岐阜", "横浜エクセレンス", "有料", "2500", ["27日19:05", "28日15:05"], ["27日 21:05", "28日 17:05"], rowspan=2),
+        bd_row(28, "土"),
+        bd_row(29, "日", "日本整形外科学会100周年記念イベントin横浜", "神奈川県臨床整形外科医会", "無料", "700", ["13:00"], ["16:00"]),
+    ]
+)
+BUDOKAN_DOJO = bd_row(1, "日", "第48回関東・東北空手道選手権大会", "", "関係者のみ", "300", ["未定"], ["未定"])
+BUDOKAN = (
+    '<h3 id="arena">アリーナ</h3>' + table("arena", BUDOKAN_ARENA) + '<h3 id="dojo">武道場</h3>' + table("dojo", BUDOKAN_DOJO)
+)
 
 
 def test_budokan():
-    evs = S.parse_budokan_lines(BUDOKAN, 2026, 11)
-    pick = lambda d: [e for e in evs if e.day == date(2026, 11, d)]
-    assert [(e.start, e.end) for e in pick(1) if e.venue == "横浜武道館"] == [("15:05", "17:05")]
-    assert pick(2) == [], "非公開は除外"
-    assert [(e.title[:5], e.start, e.end) for e in pick(3)] == [("Super", "13:00", "19:00")]
-    assert pick(4)[0].start is None and "450" in pick(4)[0].note
+    soup = BeautifulSoup(BUDOKAN, "lxml")
+    evs, nrows = S.parse_budokan(soup, 2026, 11)
+    assert nrows >= 9
+    pick = lambda d, v="横浜武道館": [e for e in evs if e.day == date(2026, 11, d) and e.venue == v]
+    assert [(e.start, e.end) for e in pick(1)] == [("15:05", "17:05")]
+    assert pick(2) == [] and pick(6) == [] and pick(19) == [], "非公開・設営・休館日は除外"
+    e3 = pick(3)
+    assert [(e.title, e.start, e.end) for e in e3] == [("Super Big Bang 2026", "13:00", "19:00")], e3
+    assert e3[0].note == "有料 来場3000人", e3[0].note
+    assert [(e.start, e.end) for e in pick(4)] == [("09:30", "18:00")]
     assert [(e.start, e.end) for e in pick(27)] == [("19:05", "21:05")]
     assert [(e.start, e.end) for e in pick(28)] == [("15:05", "17:05")], pick(28)
-    assert [e.venue for e in pick(1)].count("横浜武道館(武道場)") == 1
+    assert [(e.start, e.end) for e in pick(29)] == [("13:00", "16:00")]
+    dojo = pick(1, "横浜武道館(武道場)")
+    assert len(dojo) == 1 and dojo[0].start is None
+
+
+def test_budokan_unreadable_page_warns():
+    """表が読めなかったとき、「なし」ではなく警告が出ること(取りこぼしの見逃し防止)。"""
+    res = Result("budokan", "横浜武道館", "https://www.yokohama-budokan.com/event/")
+    S.budokan(ctx_for({"budokan-202611": "<html><body><p>全く違う作りのページ</p></body></html>"}), res)
+    assert res.events == [] and res.warnings, res.warnings
 
 
 BUNTAI = [
@@ -137,16 +212,18 @@ def test_buntai():
     assert (f(11, 29)[0].open, f(11, 29)[0].start) == ("15:00", "16:00")
 
 
+# ---------------------------------------------------------------- 日産スタジアム(一覧・詳細とも実HTMLと同じ構造)
 NISSAN = """<h3>2026年11月</h3><a href="?m=x">2026年12月</a>
 <table><tr><td>icon</td><td>スタジアムツアー</td></tr></table>
 <table>
-<tr><td>1</td><td>日</td><td><img alt="x"><a href="detail.php?id1">マリノス vs 川崎</a></td><td>日産スタジアム</td></tr>
-<tr><td>2</td><td>月</td><td></td><td></td></tr>
-<tr><td>3</td><td>火祝</td><td><img alt="y"><a href="detail.php?id2">高校駅伝</a></td><td>日産フィールド小机</td></tr>
-<tr><td></td><td></td><td><a href="detail.php?id3">同日の別イベント</a></td><td>草地広場</td></tr>
-<tr><td>8</td><td>日</td><td><a href="/tour"><img alt="ツアー"></a></td><td></td></tr>
+<tr class="bdnone01"><th>1</th><th class="th01"><span class="sun"><span>日</span></span></th><td><img src="img/icon_soccer.png" title="サッカー" alt="サッカー"><a href="detail.php?id1">マリノス vs 川崎</a><a><br></a></td><td class="sub2">日産スタジアム</td></tr>
+<tr><th>2</th><th>月</th><td></td><td></td></tr>
+<tr><th>3</th><th>火祝</th><td><img alt="y"><a href="detail.php?id2">高校駅伝</a></td><td>日産フィールド小机</td></tr>
+<tr><td><a href="detail.php?id3">同日の別イベント</a></td><td>草地広場</td></tr>
+<tr><th>8</th><th>日</th><td><a href="/tour"><img alt="ツアー"></a></td><td></td></tr>
 </table>"""
-NISSAN_DETAIL = "<p>試合情報</p><p>開場 11:00</p><p>キックオフ 14:00</p><p>受付開始 08:00</p>"
+NISSAN_DETAIL = """<section class="cont_right"><table class="cal_table"><tbody><tr><th>行事名</th><td>明治安田Ｊ１リーグ 横浜F・マリノス vs 川崎フロンターレ</td></tr><tr><th>期日</th><td>2026年11月1日</td></tr><tr><th>開場</th><td>10時30分</td></tr><tr><th>開始</th><td>13時</td></tr><tr><th>終了</th><td></td></tr><tr><th>主催</th><td></td></tr></tbody></table></section>"""
+NISSAN_DETAIL_EMPTY = """<table class="cal_table"><tbody><tr><th>行事名</th><td>x</td></tr><tr><th>開場</th><td></td></tr><tr><th>開始</th><td></td></tr><tr><th>終了</th><td></td></tr></tbody></table>"""
 
 
 def test_nissan():
@@ -154,20 +231,47 @@ def test_nissan():
     S.nissan(ctx_for({"nissan-base": NISSAN, "nissan-detail": NISSAN_DETAIL}), res)
     d3 = [e for e in res.events if e.day == date(2026, 11, 3)]
     assert [e.title for e in d3] == ["高校駅伝", "同日の別イベント"], d3
-    assert (d3[0].open, d3[0].start) == ("11:00", "14:00"), (d3[0].open, d3[0].start)
+    assert (d3[0].open, d3[0].start, d3[0].end) == ("10:30", "13:00", None), (d3[0].open, d3[0].start)
     assert not [e for e in res.events if e.day == date(2026, 11, 8)], "画像だけのリンクは除外"
+    # 詳細に時刻が書かれていないときは、時刻なし(終日/未定)のまま
+    res2 = Result("nissan", "日産スタジアム", "https://www.nissan-stadium.jp/calendar/")
+    S.nissan(ctx_for({"nissan-base": NISSAN, "nissan-detail": NISSAN_DETAIL_EMPTY}), res2)
+    assert all(e.open is None and e.start is None for e in res2.events if e.day == date(2026, 11, 3))
 
 
-PIA = """<a href="/event/6683.html">11.01 SUN コブクロ LIVE TOUR</a>
-<a href="/event/7098.html">11.02 MON PRIVATE</a><a href="/event/7096.html">11.03 TUE ガールズバンドクライ Special LIVE</a>"""
+# ---------------------------------------------------------------- ぴあアリーナMM(実HTMLと同じ構造)
+def pia_item(href, md, wd, title):
+    return (
+        f'<li><a class="event-list" href="{href}"><div class="event-list__date"><p>{md}</p><span class="nationalHoliday">{wd}</span></div>'
+        '<div class="event-list__photo"><img class="event-list__photo__bg" src="a.jpg" alt=""><img class="event-list__photo__img" src="a.jpg" alt=""></div>'
+        f'<div class="event-list__detail"><div class="title"><h3>{title}</h3><p></p></div></div></a></li>'
+    )
+
+
+PIA = "<ul>" + "".join(
+    [
+        pia_item("event/6683.html", "11.01", "SUN", "コブクロ KOBUKURO LIVE TOUR 2026 霞日和"),
+        pia_item("event/7098.html", "11.02", "MON", "PRIVATE"),
+        pia_item("event/7096.html", "11.03", "TUE", "ガールズバンドクライ Special LIVE“赤色の響祭”"),
+    ]
+) + "</ul>"
+PIA_DETAIL = '<dl class="single-event__list"><dt>公演時間</dt><dd>開場/17:00 開演/18:00</dd></dl><dl class="single-event__list"><dt>料金</dt><dd>x</dd></dl>'
 
 
 def test_pia():
     res = Result("pia", "ぴあアリーナMM", "")
-    S.pia(ctx_for({"pia-202611": PIA, "pia-detail": "<p>OPEN 16:00</p><p>START 17:00</p>"}), res)
-    assert [e.title for e in res.events if e.day.day in (2, 3)] == ["ガールズバンドクライ Special LIVE"]
+    S.pia(ctx_for({"pia-202611": PIA, "pia-detail": PIA_DETAIL}), res)
+    assert [e.title for e in res.events if e.day.day in (2, 3)] == ["ガールズバンドクライ Special LIVE“赤色の響祭”"]
     e = [e for e in res.events if e.day.day == 3][0]
-    assert (e.open, e.start) == ("16:00", "17:00")
+    assert (e.open, e.start) == ("17:00", "18:00")
+    assert e.url == "https://pia-arena-mm.jp/event/7096.html", e.url
+    assert not res.warnings
+
+
+def test_pia_unreadable_page_warns():
+    res = Result("pia", "ぴあアリーナMM", "")
+    S.pia(ctx_for({"pia-202611": "<html><body>違う作り</body></html>"}), res)
+    assert res.warnings
 
 
 AKARENGA = """<ul><li><a href="/event/aaa/">全国ふるさとフェア２０２６ 全国ふるさとフェア２０２６</a><p>詳細は「イベントの詳細を見る」をご確認ください。</p>
@@ -206,6 +310,21 @@ def test_full_run_with_failures(tmp_path_str="/tmp/board_test_out"):
     assert "自動取得未対応" in html
     assert "終演目安" in html
     assert sum(1 for r in results if r.error) >= 6
+
+
+def test_full_run_all_sources_with_real_shapes(tmp_path_str="/tmp/board_test_out2"):
+    pages = {
+        "ships-2026": SHIPS, "zepp-202611": ZEPP, "karena": KARENA,
+        "budokan-202611": BUDOKAN, "buntai": lines_html(BUNTAI),
+        "nissan-base": NISSAN, "nissan-detail": NISSAN_DETAIL,
+        "pia-202611": PIA, "pia-detail": PIA_DETAIL, "akarenga": AKARENGA,
+        "arena-202611": "<p>2026.11.02 コンサート</p><p>デモ公演</p><p>開場：17:00 開演：18:00</p>",
+    }
+    now = datetime(2026, 11, 2, 4, 0, tzinfo=JST)
+    results = run(tmp_path_str, None, fetcher=FakeFetcher(pages), now=now)
+    assert not [r.name for r in results if r.error], [(r.name, r.error) for r in results if r.error]
+    html = open(os.path.join(tmp_path_str, "index.html"), encoding="utf-8").read()
+    assert "ガールズバンドクライ" in html and "Super Big Bang 2026" in html
 
 
 if __name__ == "__main__":

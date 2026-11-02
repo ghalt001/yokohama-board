@@ -55,12 +55,16 @@ def dedupe_repeat(s: str) -> str:
 
 
 def norm_time(s: str | None) -> str | None:
+    """「17:00」「17時」「10時30分」などを HH:MM にそろえる。読めなければ None。"""
     if not s:
         return None
-    m = re.search(r"(\d{1,2})\s*(?:[:：]|時)\s*(\d{2})", s)
-    if not m:
-        return None
-    return f"{int(m.group(1)):02d}:{m.group(2)}"
+    m = re.search(r"(\d{1,2})\s*[:：]\s*(\d{2})", s)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    m = re.search(r"(\d{1,2})\s*時\s*(?:(\d{1,2})\s*分?)?", s)
+    if m:
+        return f"{int(m.group(1)):02d}:{int(m.group(2) or 0):02d}"
+    return None
 
 
 def infer_date(month: int, day: int, today: date) -> date:
@@ -74,9 +78,9 @@ def infer_date(month: int, day: int, today: date) -> date:
     return min(cands, key=lambda x: abs((x - today).days))
 
 
-_OPEN = r"(?:開場|OPEN|Open|open)\s*[:：]?\s*" + TIME_PAT
-_START = r"(?<![付売場])(?:開演|開始|キックオフ|KICK\s*OFF|試合開始|START|Start|start)\s*[:：]?\s*" + TIME_PAT
-_END = r"(?:終演|終了|END)\s*(?:予定)?\s*[:：]?\s*" + TIME_PAT
+_OPEN = r"(?:開場|OPEN|Open|open)\s*[:：/／]?\s*" + TIME_PAT
+_START = r"(?<![付売場])(?:開演|開始|キックオフ|KICK\s*OFF|試合開始|START|Start|start)\s*[:：/／]?\s*" + TIME_PAT
+_END = r"(?:終演|終了|END)\s*(?:予定)?\s*[:：/／]?\s*" + TIME_PAT
 
 
 def times_from_text(text: str):

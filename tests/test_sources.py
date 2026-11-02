@@ -414,7 +414,13 @@ def test_full_run_all_sources_with_real_shapes(tmp_path_str="/tmp/board_test_out
         "arena-202611": ARENA_JSON, "hamasta-202611": None, "pacifico-": ICS,
     }
     now = datetime(2026, 11, 2, 4, 0, tzinfo=JST)
-    results = run(tmp_path_str, None, fetcher=FakeFetcher(pages), now=now)
+    from board import render as R
+
+    R.SHOW_TOMORROW = True  # 明日分の解析も確認するため一時的に有効化
+    try:
+        results = run(tmp_path_str, None, fetcher=FakeFetcher(pages), now=now)
+    finally:
+        R.SHOW_TOMORROW = False
     assert not [r.name for r in results if r.error], [(r.name, r.error) for r in results if r.error]
     html = open(os.path.join(tmp_path_str, "index.html"), encoding="utf-8").read()
     assert "ガールズバンドクライ" in html and "Super Big Bang 2026" in html

@@ -5,7 +5,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from . import sources as S
 from .models import Result
@@ -64,7 +64,16 @@ def main():
         action="store_true",
         help="環境変数 BOARD_PASSCODE が無い/短い場合は公開せずに失敗する(本番用)",
     )
+    ap.add_argument("--date", default=None, help="テスト用: この日付(YYYY-MM-DD)を「今日」として表示する")
     a = ap.parse_args()
+
+    now = None
+    if a.date:
+        try:
+            now = datetime.combine(date.fromisoformat(a.date), time(4, 0), tzinfo=JST)
+        except ValueError:
+            print(f"[STOP] --date は YYYY-MM-DD の形式で指定してください: {a.date!r}", file=sys.stderr)
+            sys.exit(2)
 
     passcode = os.environ.get("BOARD_PASSCODE")
     if a.require_passcode or passcode:
@@ -74,7 +83,7 @@ def main():
             print(f"[STOP] {e}。保護なしでは公開しません。", file=sys.stderr)
             sys.exit(2)
 
-    results = run(a.out, a.raw)
+    results = run(a.out, a.raw, now=now)
     if passcode:
         lock_site(a.out, passcode)
         print("[OK] ページをパスコードで暗号化しました")

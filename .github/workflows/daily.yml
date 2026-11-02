@@ -6,6 +6,11 @@ on:
     - cron: "0 19 * * *"
     - cron: "30 20 * * *"
   workflow_dispatch: # 手動実行ボタン用
+    inputs:
+      date:
+        description: "テスト用: この日付を「今日」として表示(例 2026-10-04)。通常は空欄"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -30,7 +35,8 @@ jobs:
       - name: 情報を集めてHTMLを作る(パスコードで暗号化。未設定なら公開せず失敗)
         env:
           BOARD_PASSCODE: ${{ secrets.BOARD_PASSCODE }}
-        run: python -m board.main --out site --raw raw --require-passcode
+          TEST_DATE: ${{ inputs.date }}
+        run: python -m board.main --out site --raw raw --require-passcode ${TEST_DATE:+--date "$TEST_DATE"}
       - name: 取得した生HTMLを保存(うまく読めないときの調査用)
         if: always()
         uses: actions/upload-artifact@v4

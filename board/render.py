@@ -28,6 +28,21 @@ def fmt_day(d: date) -> str:
     return f"{d.month}/{d.day}({WDJ[d.weekday()]})"
 
 
+ROKUYO = ["大安", "赤口", "先勝", "友引", "先負", "仏滅"]
+
+
+def rokuyo(d: date) -> str | None:
+    """六曜。旧暦の(月+日)を6で割った余りで決まる。計算できなければ None(表示しないだけで止めない)。"""
+    try:
+        from lunardate import LunarDate
+
+        conv = getattr(LunarDate, "from_solar_date", None) or LunarDate.fromSolarDate
+        l = conv(d.year, d.month, d.day)
+        return ROKUYO[(l.month + l.day) % 6]
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _mins(t: str) -> int:
     h, m = t.split(":")
     return int(h) * 60 + int(m)
@@ -45,7 +60,7 @@ def est_end(e):
     base = e.start or (_hhmm(_mins(e.open) + 60) if e.open else None)
     if not base:
         return None, True
-    dur = 120 if re.search(r"\bvs\b|ＶＳ|リーグ|LEAGUE|TIPOFF", e.title, re.I) else 150
+    dur = 120  # コンサート・スポーツとも開演から2時間で見込む
     return _hhmm(_mins(base) + dur), True
 
 
@@ -94,39 +109,41 @@ def event_card(e) -> str:
     )
 
 
+def _ship_row(s, d) -> str:
+    note = f" <small>{esc(s.note)}</small>" if s.note else ""
+    return f"<li><span class='venue'>{esc(s.berth)}</span> <b>{esc(s.name)}</b>{note}<div class='sub'>{esc(d)}</div></li>"
+
+
 def day_section(results, day) -> str:
     evs = events_on(results, day)
     ships = ships_on(results, day)
     out = []
 
-    # 終演時刻の近い順(タクシー需要の目安)
+    # 客船(最上部)
+    out.append("<h3>客船</h3>")
+    if ships:
+        out.append("<ul class='ships'>" + "".join(_ship_row(s, d) for s, d in ships) + "</ul>")
+    else:
+        out.append("<p class='empty'>入港・出港の予定なし</p>")
+
+    # 終演・入港の時刻の近い順(タクシー需要の目安。入港時刻=人が動き出す時刻として並べる)
     ends = []
     for e in evs:
         end, est = est_end(e)
         if end and e.start:
-            ends.append((end, est, e))
+            ends.append((end, f"<li><b>{end}</b>{'<small>推定</small>' if est else ''} {esc(e.venue)} — {esc(e.title)}</li>"))
+    for s, _ in ships:
+        if s.arrive_day == day and s.arrive_time:
+            ends.append((s.arrive_time, f"<li class='shiprow'><b>{s.arrive_time}</b><small>入港</small> 🚢 {esc(s.berth)} — {esc(s.name)}</li>"))
     ends.sort(key=lambda x: x[0])
     if ends:
-        out.append("<h3>終演の目安(早い順)</h3><ul class='ends'>")
-        for end, est, e in ends:
-            out.append(f"<li><b>{end}</b>{'<small>推定</small>' if est else ''} {esc(e.venue)} — {esc(e.title)}</li>")
-        out.append("</ul>")
+        out.append("<h3>終演・入港の目安(早い順)</h3><ul class='ends'>" + "".join(x[1] for x in ends) + "</ul>")
 
     out.append("<h3>イベント(開始順)</h3>")
     if evs:
         out.append("<ul class='cards'>" + "".join(event_card(e) for e in evs) + "</ul>")
     else:
         out.append("<p class='empty'>取得できたイベントはありません</p>")
-
-    out.append("<h3>客船</h3>")
-    if ships:
-        out.append("<ul class='ships'>")
-        for s, d in ships:
-            note = f" <small>{esc(s.note)}</small>" if s.note else ""
-            out.append(f"<li><span class='venue'>{esc(s.berth)}</span> <b>{esc(s.name)}</b>{note}<div class='sub'>{esc(d)}</div></li>")
-        out.append("</ul>")
-    else:
-        out.append("<p class='empty'>入港・出港の予定なし</p>")
     return "".join(out)
 
 
@@ -171,6 +188,7 @@ ul{list-style:none;margin:0;padding:0}a{color:var(--acc)}
 .time{min-width:64px;font-weight:700;font-size:1.1rem;font-variant-numeric:tabular-nums}
 .body{flex:1;min-width:0}.venue{display:inline-block;font-size:.75rem;background:var(--line);border-radius:4px;padding:0 6px;margin-right:4px}
 .title{font-weight:600;word-break:break-word}.sub{color:var(--mut);font-size:.85rem}.sub b{color:var(--fg)}.note{font-size:.8rem;color:var(--mut)}
+.rokuyo{font-size:.7em;font-weight:400;color:var(--mut);margin-left:6px}
 .ends li{padding:3px 0;border-bottom:1px dashed var(--line)}.ends small{color:var(--mut);margin:0 4px}
 .ships li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:8px}
 .empty{color:var(--mut);margin:.3em 0}
@@ -210,7 +228,8 @@ def render(results, now: datetime, targets: list[date]) -> str:
         parts += [f"<li>{esc(p)}</li>" for p in problems]
         parts.append("</ul></div>")
 
-    parts.append(f"<h2>今日 {fmt_day(today)}</h2>")
+    rk = rokuyo(today)
+    parts.append(f"<h2>今日 {fmt_day(today)}{' <small class=\'rokuyo\'>' + rk + '</small>' if rk else ''}</h2>")
     if SHOW_CHIPS:
         parts.append(status_chips(results, today))
     parts.append(day_section(results, today))
@@ -223,7 +242,7 @@ def render(results, now: datetime, targets: list[date]) -> str:
         parts.append(day_section(results, t))
         parts.append("</details>")
 
-    parts.append("<footer><p>※公式サイトの情報を自動で集めたものです。時刻の変更・中止は各公式サイトで確認してください。「終演目安」と書かれたものは開演からの推定です。</p><ul>")
+    parts.append("<footer><p>※公式サイトの情報を自動で集めたものです。時刻の変更・中止は各公式サイトで確認してください。「終演目安」と書かれたものは開演から2時間後の推定です。</p><ul>")
     for r in results:
         parts.append(f"<li><a href='{esc(r.url)}' target='_blank' rel='noopener'>{esc(r.name)}</a>")
         for n in r.notes:

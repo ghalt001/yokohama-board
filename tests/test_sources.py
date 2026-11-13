@@ -389,6 +389,29 @@ def test_pacifico_all_fail_is_error():
     raise AssertionError("全カレンダー失敗はエラーにする")
 
 
+def test_rokuyo():
+    from board.render import rokuyo
+
+    assert rokuyo(date(2026, 2, 17)) == "先勝"  # 旧暦1月1日は常に先勝
+    assert rokuyo(date(2026, 11, 13)) == "友引"
+
+
+def test_end_estimate_is_two_hours_and_ships_first_and_in_ends():
+    from board import render as R
+    from board.models import Event, Ship
+
+    e = Event("Zepp Yokohama", "テスト公演", date(2026, 11, 2), start="18:00")
+    assert R.est_end(e) == ("20:00", True)
+    s = Ship("大さん橋", "飛鳥III", date(2026, 11, 2), "09:00", date(2026, 11, 2), "17:00")
+    r1 = Result("z", "Zepp Yokohama", "u"); r1.events.append(e)
+    r2 = Result("ships", "客船入港", "u"); r2.ships.append(s)
+    h = R.day_section([r1, r2], date(2026, 11, 2))
+    assert h.index("<h3>客船</h3>") < h.index("終演・入港の目安") < h.index("イベント(開始順)")
+    ends = h[h.index("終演・入港の目安"):h.index("イベント(開始順)")]
+    assert ends.index("09:00") < ends.index("20:00") and "飛鳥III" in ends
+    assert "入港" in ends and "17:00" not in ends  # 出港は目安一覧に入れない
+
+
 def test_dedupe():
     assert dedupe_repeat("A A B") == "A B"
     assert dedupe_repeat("来栖りん 来栖りん 来栖りん ワン") == "来栖りん ワン"

@@ -396,7 +396,7 @@ def test_rokuyo():
     assert rokuyo(date(2026, 11, 13)) == "友引"
 
 
-def test_end_estimate_is_two_hours_and_ships_first_and_in_ends():
+def test_end_estimate_is_two_hours_and_ship_order():
     from board import render as R
     from board.models import Event, Ship
 
@@ -406,8 +406,8 @@ def test_end_estimate_is_two_hours_and_ships_first_and_in_ends():
     r1 = Result("z", "Zepp Yokohama", "u"); r1.events.append(e)
     r2 = Result("ships", "客船入港", "u"); r2.ships.append(s)
     h = R.day_section([r1, r2], date(2026, 11, 2))
-    assert h.index("<h3>客船</h3>") < h.index("終演・入港の目安") < h.index("イベント(開始順)")
-    ends = h[h.index("終演・入港の目安"):h.index("イベント(開始順)")]
+    assert h.index("終演・入港の目安") < h.index("<h3>客船</h3>") < h.index("イベント(開始順)")
+    ends = h[h.index("終演・入港の目安"):h.index("<h3>客船</h3>")]
     assert ends.index("09:00") < ends.index("20:00") and "飛鳥III" in ends
     assert "入港" in ends and "17:00" not in ends  # 出港は目安一覧に入れない
 

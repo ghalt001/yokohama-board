@@ -119,13 +119,6 @@ def day_section(results, day) -> str:
     ships = ships_on(results, day)
     out = []
 
-    # 客船(最上部)
-    out.append("<h3>客船</h3>")
-    if ships:
-        out.append("<ul class='ships'>" + "".join(_ship_row(s, d) for s, d in ships) + "</ul>")
-    else:
-        out.append("<p class='empty'>入港・出港の予定なし</p>")
-
     # 終演・入港の時刻の近い順(タクシー需要の目安。入港時刻=人が動き出す時刻として並べる)
     ends = []
     for e in evs:
@@ -138,6 +131,13 @@ def day_section(results, day) -> str:
     ends.sort(key=lambda x: x[0])
     if ends:
         out.append("<h3>終演・入港の目安(早い順)</h3><ul class='ends'>" + "".join(x[1] for x in ends) + "</ul>")
+
+    # 客船(目安一覧の下、イベントの上)
+    out.append("<h3>客船</h3>")
+    if ships:
+        out.append("<ul class='ships'>" + "".join(_ship_row(s, d) for s, d in ships) + "</ul>")
+    else:
+        out.append("<p class='empty'>入港・出港の予定なし</p>")
 
     out.append("<h3>イベント(開始順)</h3>")
     if evs:

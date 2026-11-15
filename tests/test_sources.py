@@ -175,6 +175,8 @@ BUDOKAN_ARENA = "".join(
         CLOSED,
         bd_row(27, "金", "B.LEAGUE ONE 2026-27 SEASON 横浜エクセレンス vs 岐阜", "横浜エクセレンス", "有料", "2500", ["27日19:05", "28日15:05"], ["27日 21:05", "28日 17:05"], rowspan=2),
         bd_row(28, "土"),
+        bd_row(14, "土", "Wリーグ 2026-27 横浜大会 富士通レッドウェーブホームゲーム vs トヨタ紡織", "", "有料", "2000", ["14:00"], ["16:00"], rowspan=2),
+        bd_row(15, "日"),
         bd_row(29, "日", "日本整形外科学会100周年記念イベントin横浜", "神奈川県臨床整形外科医会", "無料", "700", ["13:00"], ["16:00"]),
     ]
 )
@@ -198,6 +200,10 @@ def test_budokan():
     assert [(e.start, e.end) for e in pick(27)] == [("19:05", "21:05")]
     assert [(e.start, e.end) for e in pick(28)] == [("15:05", "17:05")], pick(28)
     assert [(e.start, e.end) for e in pick(29)] == [("13:00", "16:00")]
+    # 2日続き(日付ごとの時刻表記なし)は、2日目にも同じ時刻で出る
+    assert [(e.title[:4], e.start, e.end) for e in pick(14)] == [("Wリーグ", "14:00", "16:00")], pick(14)
+    assert [(e.title[:4], e.start, e.end) for e in pick(15)] == [("Wリーグ", "14:00", "16:00")], pick(15)
+    assert len(pick(27)) == 1 and len(pick(28)) == 1, "日付ごとに時刻が書かれた2日続きは重複させない"
     dojo = pick(1, "横浜武道館(武道場)")
     assert len(dojo) == 1 and dojo[0].start is None
 

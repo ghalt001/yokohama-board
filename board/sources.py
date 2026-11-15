@@ -169,13 +169,24 @@ def parse_budokan(soup, y: int, m: int):
         section = clean(head.get_text()) if head else ""
         is_dojo = "武道" in section or (not section and ti == 1)
         venue = "横浜武道館(武道場)" if is_dojo else "横浜武道館"
+        carry = None  # rowspan で複数日にまたがるイベント: [残り行数, その行で作った日付なしイベント, 作った日の集合]
         for tr in table.find_all("tr"):
             d = tr.find("span", class_="_date")
             if not d or not clean(d.get_text()).isdigit():
                 continue
             nrows += 1
             tds = tr.find_all("td", recursive=False)
-            if not tds or "_close" in (tr.get("class") or []):
+            if not tds:
+                # 2日目以降の行(セルなし)。直前の行が rowspan で続いていれば、同じ内容をこの日にも付ける
+                if carry and carry[0] > 0:
+                    carry[0] -= 1
+                    rd = int(clean(d.get_text()))
+                    if date(y, m, rd) not in carry[2]:
+                        for t in carry[1]:
+                            events.append(Event(t.venue, t.title, date(y, m, rd), start=t.start, end=t.end, note=t.note))
+                continue
+            carry = None
+            if "_close" in (tr.get("class") or []):
                 continue
             u = tds[0].select_one("._user")
             title = clean(u.get_text(" ")) if u else clean(tds[0].get_text(" "))
@@ -187,12 +198,24 @@ def parse_budokan(soup, y: int, m: int):
             note = (kubun + (f" 来場{count}人" if count.isdigit() else "")).strip()
             starts = _tokens(tds[3]) if len(tds) > 3 else []
             ends = _tokens(tds[4]) if len(tds) > 4 else []
+            made, generic = [], []
             if not starts:
-                events.append(Event(venue, title, date(y, m, row_day), note=note))
-                continue
+                ev = Event(venue, title, date(y, m, row_day), note=note)
+                made.append(ev)
+                generic.append(ev)
             for i, (dd, t) in enumerate(starts):
                 end = ends[i][1] if i < len(ends) else None
-                events.append(Event(venue, title, date(y, m, dd or row_day), start=t, end=end, note=note))
+                ev = Event(venue, title, date(y, m, dd or row_day), start=t, end=end, note=note)
+                made.append(ev)
+                if dd is None:
+                    generic.append(ev)
+            events.extend(made)
+            try:
+                span = int(tds[0].get("rowspan") or 1)
+            except ValueError:
+                span = 1
+            if span > 1:
+                carry = [span - 1, generic, {e.day for e in made}]
     return events, nrows
 
 
